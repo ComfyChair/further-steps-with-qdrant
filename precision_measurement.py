@@ -1,10 +1,10 @@
-import csv
 import json
 import time
 from dataclasses import dataclass
 
 import matplotlib.pyplot as plt
 from qdrant_client import QdrantClient, models
+from qdrant_client.http.models import SearchParams
 
 QDRANT_HOST = "localhost"
 QDRANT_PORT = 6333
@@ -33,9 +33,8 @@ class Averages:
     avg_time: float
 
 
-def query(client: QdrantClient, embedding: list[float], k: int, exact: bool = False, ef: int = None) -> Measurement:
+def query(client: QdrantClient, embedding: list[float], k: int, search_param: SearchParams) -> Measurement:
     """Performs a query using the Qdrant client and measures its execution time."""
-    search_param = models.SearchParams(exact=True) if exact else models.SearchParams(hnsw_ef=ef)
     start_time = time.time()
     result = client.query_points(
         collection_name=COLLECTION_NAME,
@@ -48,13 +47,26 @@ def query(client: QdrantClient, embedding: list[float], k: int, exact: bool = Fa
     return Measurement(result_set, query_time)
 
 
-def measure_precision(client: QdrantClient, test_dataset: dict[str, list[float]], ground_truth: dict[str, set[str | int]], k: int, ef: int = None) -> Averages:
+def measure_precision(client: QdrantClient,
+                      test_dataset: dict[str, list[float]],
+                      ground_truth: dict[str, set[str | int]],
+                      k: int,
+                      ef: int = None,
+                      rescore: bool = True
+                      ) -> Averages:
     """Measures ANN query precision compared to exact k-NN queries across the test dataset."""
     precision_scores = []
     ann_times = []
 
+    search_param = models.SearchParams(
+        quantization=models.QuantizationSearchParams(
+            rescore=rescore,
+            oversampling=2.0,
+        ),
+        hnsw_ef=ef)
+
     for key, embedding in test_dataset.items():
-        ann = query(client, embedding, k=k, ef=ef)
+        ann = query(client, embedding, k=k, search_param=search_param)
 
         # Calculate precision@k: intersection between ANN and exact k-NN results
         intersection = ann.results.intersection(ground_truth[key])
@@ -70,7 +82,8 @@ def measure_precision(client: QdrantClient, test_dataset: dict[str, list[float]]
 
 def get_ground_truth(client: QdrantClient, test_dataset: dict[str, list[float]], k: int) -> GroundTruth:
     """Calculates ground truth for test dataset using exact search."""
-    measurements: list[Measurement] = [query(client, embedding, k=k, exact=True) for _, embedding in test_dataset.items()]
+    search_param = models.SearchParams(exact=True, quantization=models.QuantizationSearchParams(ignore=True))
+    measurements = [query(client, embedding, k=k, search_param=search_param) for _, embedding in test_dataset.items()]
     ground_truth = {key: result for key, result in zip(test_dataset.keys(), [m.results for m in measurements])}
     knn_times = [m.time for m in measurements]
     knn_avg = sum(knn_times) / len(knn_times)
@@ -120,12 +133,12 @@ def plot_results(results: list[dict]):
     print("Plot saved to 'hnsw_ef_evaluation.png'")
 
 
-def precision_at_K(test_dataset: dict[str, list[float]], k: int) -> None:
+def precision_at_K(test_dataset: dict[str, list[float]], k: int, rescore: bool = True) -> None:
     """ Calculates the average precision at k for a given dataset. """
     client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
     knn = get_ground_truth(client, test_dataset, k)
 
-    ann_evaluation = measure_precision(client, test_dataset, knn.ground_truth, k)
+    ann_evaluation = measure_precision(client, test_dataset, knn.ground_truth, k, rescore=rescore)
     print(f'Average precision@{k}: {ann_evaluation.precision:.4f}')
     print(f'Average ANN query time: {ann_evaluation.avg_time * 1000:.2f} ms')
     print(f'Average exact k-NN query time: {knn.avg_time * 1000:.2f} ms')
@@ -136,10 +149,11 @@ def main():
     with open(QUERIES_FILE, 'r', encoding='utf-8') as file:
         test_dataset = json.load(file)
 
-    hnsw_ef_values = [10, 20, 50, 100, 200]
-    results = evaluate_hnsw_ef(K_LIMIT, hnsw_ef_values, test_dataset)
-    print(json.dumps(results, indent=4))
-    plot_results(results)
+    precision_at_K(test_dataset, K_LIMIT)
+    # hnsw_ef_values = [10, 20, 50, 100, 200]
+    # results = evaluate_hnsw_ef(K_LIMIT, hnsw_ef_values, test_dataset)
+    # print(json.dumps(results, indent=4))
+    # plot_results(results)
 
 if __name__ == '__main__':
     main()
