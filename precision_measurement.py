@@ -82,6 +82,7 @@ def evaluate_hnsw_ef(k: int, hnsw_ef_values: list[int], test_dataset: dict[str, 
     client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
     knn_results = get_ground_truth(client, test_dataset, k)
     ground_truth = knn_results.ground_truth
+    print(f"Average exact query time: {knn_results.avg_time * 1000:.2f} ms")
 
     results = []
     for ef in hnsw_ef_values:
@@ -120,6 +121,7 @@ def plot_results(results: list[dict]):
 
 
 def precision_at_K(test_dataset: dict[str, list[float]], k: int) -> None:
+    """ Calculates the average precision at k for a given dataset. """
     client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
     knn = get_ground_truth(client, test_dataset, k)
 
